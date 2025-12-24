@@ -1,193 +1,149 @@
+import uvicorn
 from fastapi import FastAPI, UploadFile, File, Body
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 import pdfplumber
-import pytesseract
-from PIL import Image
 import io
 import requests
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from typing import List
 
 # ================= APP =================
 app = FastAPI()
 
 # ================= CONFIG =================
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "phi3:mini"
+MODEL_NAME = "llama3.2:1b"
 EMBED_MODEL = "all-MiniLM-L6-v2"
 
 EMBED_DIM = 384
-TOP_K = 4
-MAX_CHARS_PER_CHUNK = 400
+TOP_K = 10
+MAX_CHARS_PER_CHUNK = 800
+
 # ================= GLOBALS =================
+print("Loading embedding model...")
 embedder = SentenceTransformer(EMBED_MODEL)
+
 index = None
-chunks = []
-
-# ================= HELPERS =================
-def clean_text(text: str) -> str:
-    if not text:
-        return ""
-    text = text.replace("\n", " ").replace("\r", " ")
-    return " ".join(text.split())
-
-
-def chunk_text(text, chunk_size=500, overlap=80):
-    words = text.split()
-    chunks = []
-    i = 0
-    while i < len(words):
-        chunk = words[i:i + chunk_size]
-        chunks.append(" ".join(chunk))
-        i += chunk_size - overlap
-    return chunks
-
+chunks = []   # { text, source, page }
 
 # ================= HOME =================
 @app.get("/", response_class=HTMLResponse)
-def home():
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>AI Document Chatbot</title>
-</head>
-<body>
-<h2>AI Document Chatbot — RAG</h2>
+async def get_index():
+    with open("templates/index.html", "r", encoding="utf-8") as f:
+        return f.read()
 
-<form id="uploadForm">
-    <input type="file" id="file" />
-    <button type="submit">Upload & Extract</button>
-</form>
-
-<p id="status"></p>
-
-<hr>
-
-<input type="text" id="question" placeholder="Ask a question" style="width:300px;">
-<button onclick="ask()">Ask</button>
-
-<pre id="chat"></pre>
-
-<script>
-document.getElementById("uploadForm").onsubmit = async (e) => {
-    e.preventDefault();
-    let fileInput = document.getElementById("file");
-    let formData = new FormData();
-    formData.append("file", fileInput.files[0]);
-
-    let res = await fetch("/upload", {
-        method: "POST",
-        body: formData
-    });
-    let data = await res.json();
-    document.getElementById("status").innerText = data.text;
-};
-
-async function ask() {
-    let q = document.getElementById("question").value;
-    let res = await fetch("/ask", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({q: q})
-    });
-    let data = await res.json();
-    document.getElementById("chat").innerText += "\\nYou: " + q + "\\nBot: " + data.answer + "\\n";
-}
-</script>
-</body>
-</html>
-"""
-
-
-# ================= UPLOAD =================
+# ================= UPLOAD MULTIPLE PDFs =================
 @app.post("/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(files: List[UploadFile] = File(...)):
     global index, chunks
 
-    if not file.filename.lower().endswith(".pdf"):
-        return JSONResponse({"text": "Only PDF files allowed"}, status_code=400)
+    all_text_chunks = []
+    chunks = []
 
-    contents = await file.read()
-    if not contents.startswith(b"%PDF"):
-        return JSONResponse({"text": "Invalid PDF file"}, status_code=400)
+    for file in files:
+        if not file.filename.lower().endswith(".pdf"):
+            continue
 
-    full_text = ""
+        contents = await file.read()
 
-    try:
         with pdfplumber.open(io.BytesIO(contents)) as pdf:
-            for page in pdf.pages:
+            for page_no, page in enumerate(pdf.pages):
                 text = page.extract_text()
-                if not text or text.strip() == "":
-                    img = page.to_image(resolution=300)
-                    text = pytesseract.image_to_string(img.original, lang="eng")
-                full_text += clean_text(text) + " "
-    except Exception:
-        return JSONResponse({"text": "Failed to read PDF"}, status_code=400)
+                if not text:
+                    continue
 
-    if len(full_text) < 500:
-        return JSONResponse({"text": "No readable text found"}, status_code=400)
+                words = text.split()
+                chunk_size = 400
+                overlap = 120
 
-    # Chunking
-    raw_chunks = chunk_text(full_text)
+                for i in range(0, len(words), chunk_size - overlap):
+                    chunk_text = " ".join(words[i:i + chunk_size]).strip()
+                    if not chunk_text:
+                        continue
 
-    # Embedding
+                    chunks.append({
+                        "text": chunk_text,
+                        "source": file.filename,
+                        "page": page_no + 1
+                    })
+
+                    all_text_chunks.append(chunk_text)
+
+    # ❌ NO TEXT FOUND
+    if not all_text_chunks:
+        index = None
+        return {"text": "No readable text found in PDFs"}
+
+    # ================= EMBEDDING =================
     embeddings = embedder.encode(
-        raw_chunks,
-        show_progress_bar=False,
-        convert_to_numpy=True
+        all_text_chunks,
+        convert_to_numpy=True,
+        show_progress_bar=False
     ).astype("float32")
 
-    # FAISS (safe logic)
-    chunks = raw_chunks
-    if len(raw_chunks) < 100:
-        index = faiss.IndexFlatL2(EMBED_DIM)
-        index.add(embeddings)
-    else:
-        quantizer = faiss.IndexFlatL2(EMBED_DIM)
-        index = faiss.IndexIVFFlat(quantizer, EMBED_DIM, 100)
-        index.train(embeddings)
-        index.add(embeddings)
+    index = faiss.IndexFlatL2(EMBED_DIM)
+    index.add(embeddings)
 
-    return {"text": "Document processed successfully"}
-
+    return {
+        "text": f"Processed {len(files)} PDFs ({len(chunks)} chunks)",
+        "files": list({c["source"] for c in chunks})
+    }
 
 # ================= ASK =================
 @app.post("/ask")
 async def ask(body: dict = Body(...)):
     global index, chunks
 
-    q = body.get("q", "").strip()
-    if not q:
-        return JSONResponse({"answer": "Ask a question"}, status_code=400)
+    query = body.get("q", "").strip()
 
-    if index is None or len(chunks) == 0:
-        return JSONResponse({"answer": "Upload a document first"}, status_code=400)
+    if not query:
+        return {"answer": "Please ask a question."}
 
-    q_emb = embedder.encode(q).astype("float32")
-    _, I = index.search(np.array([q_emb]), TOP_K)
+    if index is None or not chunks:
+        return {"answer": "Upload documents first."}
 
-    context_chunks = []
-    for idx in I[0]:
-        if 0 <= idx < len(chunks):
-            context_chunks.append(chunks[idx][:MAX_CHARS_PER_CHUNK])
+    # ================= VECTOR SEARCH =================
+    q_emb = embedder.encode(query).astype("float32")
+    _, indices = index.search(np.array([q_emb]), TOP_K)
 
-    context = "\n\n".join(context_chunks)
+    context_parts = []
+    sources = set()
 
+    for i in indices[0]:
+        if 0 <= i < len(chunks):
+            context_parts.append(
+                chunks[i]["text"][:MAX_CHARS_PER_CHUNK]
+            )
+            sources.add(
+                f'{chunks[i]["source"]} (page {chunks[i]["page"]})'
+            )
+
+    # ❌ NO CONTEXT FOUND
+    if not context_parts:
+        return {"answer": "Not found in document"}
+
+    context = "\n\n".join(context_parts)
+
+    # ================= PROMPT (UNCHANGED) =================
     prompt = f"""
 You are a document-based assistant.
 
-Use ONLY the document below.
-If the answer is not present, say: Not found in document.
+STRICT RULES:
+- Answer ONLY from the DOCUMENT below
+- Use semantic meaning (similar ideas, rephrasing allowed)
+- DO NOT use external knowledge
+- If answer is not present, reply exactly:
+  Not found in document.
 
 DOCUMENT:
 {context}
 
 QUESTION:
-{q}
+{query}
 
-Answer briefly.
+Provide a detailed explanation in 6–10 lines.
 """
 
     try:
@@ -199,15 +155,27 @@ Answer briefly.
                 "stream": False,
                 "options": {
                     "temperature": 0.1,
-                    "num_predict": 200
+                    "num_predict": 400
                 }
             },
-            timeout=60
+            timeout=120
         )
-        answer = resp.json().get("response", "").strip()
-        if not answer:
-            answer = "Not found in document"
-        return {"answer": answer}
 
-    except requests.exceptions.Timeout:
-        return JSONResponse({"answer": "Model timeout. Try again."}, status_code=504)
+        data = resp.json()
+        answer = data.get("response", "").strip()
+
+        # 🔒 SAFETY GUARD
+        if not answer or len(answer) < 15 or answer.isdigit():
+            answer = "Not found in document"
+
+        return {
+            "answer": answer,
+            "sources": list(sources)
+        }
+
+    except Exception as e:
+        return {"answer": f"Error: {str(e)}"}
+
+# ================= RUN =================
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8080)
