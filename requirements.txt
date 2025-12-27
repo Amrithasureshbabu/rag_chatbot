@@ -1,8 +1,12 @@
-fastapi
+﻿fastapi
 uvicorn
 pdfplumber
 faiss-cpu
 sentence-transformers
+<<<<<<< HEAD
+=======
+torch
+>>>>>>> a4af9092ceb59e70ad51aa2162a4c7b64b69801c
 transformers
 requests
 numpy
