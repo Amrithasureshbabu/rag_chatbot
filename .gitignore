@@ -1,19 +1,25 @@
-# Python cache
+# Python environments
+venv/
+.venv/
+.env
+
+# Bytecode and cache
 __pycache__/
 *.pyc
 *.pkl
 *.pyd
 
-# Environment variables / venv
-.env
-venv/
-.venv/
-
-# Local RAG storage (don't push)
+# Local vector/RAG storage (do not push)
 chunks.json
+chunks.jsonl
 *.bin
 *.index
-*.index.bin
-*.indexdata
-*.ivfdata
-*.lock
+*.faiss
+*.faiss.index
+*.vector
+*.vector.index
+faiss_index.bin
+
+# OS-generated files
+Thumbs.db
+.DS_Store

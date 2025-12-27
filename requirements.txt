@@ -3,7 +3,9 @@ uvicorn
 pdfplumber
 faiss-cpu
 sentence-transformers
-torch --index-url https://download.pytorch.org/whl/cpu
+transformers
 requests
-python-multipart
 numpy
+torch==2.9.0
+torchvision==0.14.0
+--extra-index-url https://download.pytorch.org/whl/cpu
