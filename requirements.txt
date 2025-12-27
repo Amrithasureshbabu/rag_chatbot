@@ -1,4 +1,5 @@
-﻿fastapi
+﻿
+fastapi
 uvicorn
 pdfplumber
 faiss-cpu
@@ -8,3 +9,5 @@ requests
 python-multipart
 numpy
 gunicorn
+
+mangum
