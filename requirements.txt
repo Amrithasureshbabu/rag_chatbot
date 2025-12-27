@@ -2,8 +2,8 @@ fastapi
 uvicorn
 pdfplumber
 faiss-cpu
-transformers
-torch
+sentence-transformers
+torch==2.9.1
 requests
 python-multipart
 numpy
