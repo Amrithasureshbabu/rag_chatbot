@@ -110,9 +110,9 @@ embedder = SentenceTransformer(EMBED_MODEL)  # ensure defined globally
 # ================= ASK =================
 @app.post("/ask")
 async def ask(body: dict = Body(...)):
-    global index, chunks, embedder  # include embedder here
+    global index, chunks
 
-    query = body.get("q", "").strip()
+    query = body.get("q", "").strip()   # this expects "q" key from frontend
 
     if not query:
         return {"answer": "Please ask a question."}
@@ -120,10 +120,11 @@ async def ask(body: dict = Body(...)):
     if index is None or not chunks:
         return {"answer": "Upload documents first."}
 
-    # Semantic vector search
-    q_emb = embedder.encode(query).astype("float32")  # FIXED usage
+    # Convert query to embedding
+    q_emb = embedder.encode(query).astype("float32")
     _, indices = index.search(np.array([q_emb]), TOP_K)
 
+    # Build context from retrieved chunks
     context_parts = []
     sources = set()
 
@@ -138,7 +139,7 @@ async def ask(body: dict = Body(...)):
 
     context = "\n\n".join(context_parts)
 
-    # Ollama prompt (unchanged)
+    # Keep prompt unchanged
     prompt = f"""
 You are a document-based assistant.
 
@@ -161,31 +162,31 @@ Provide a detailed explanation in 6–10 lines.
     try:
         resp = requests.post(
             OLLAMA_URL,
-            json={{
+            json={
                 "model": MODEL_NAME,
                 "prompt": prompt,
                 "stream": False,
-                "options": {{
+                "options": {
                     "temperature": 0.1,
                     "num_predict": 400
-                }}
-            }},
+                }
+            },
             timeout=120
         )
 
         answer = resp.json().get("response", "").strip()
 
-        # safety guard
-        if not answer or answer.isdigit() or len(answer) < 15:
+        if not answer:
             answer = "Not found in document"
 
-        return {{
+        return {
             "answer": answer,
             "sources": list(sources)
-        }}
+        }
 
     except Exception as e:
-        return {{"answer": f"Error: {str(e)}"}}
+        return {"answer": f"Error: {str(e)}"}
+
 
 # ================= RUN =================
 if __name__ == "__main__":
