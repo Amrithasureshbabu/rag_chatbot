@@ -1,10 +1,30 @@
+# Python environment
+venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Dependency and model artifacts
 .env
-venv/
-.venv/
-chunks.json
 *.bin
 *.index
+*.faiss
+*.pkl
+*.pt
+*.pth
+
+# RAG storage (local cache, don't push)
+chunks.json
+faiss_index/
+*.index
+*.index.bin
+*.index
+*.ivfdata
+*.ods
+*.lock
+
+# OS files
+.DS_Store
+Thumbs.db

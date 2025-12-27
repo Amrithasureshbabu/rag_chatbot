@@ -23,7 +23,17 @@ MAX_CHARS_PER_CHUNK = 800
 
 # ================= GLOBALS =================
 print("Loading embedding model...")
-embedder = SentenceTransformer(EMBED_MODEL)
+from transformers import AutoTokenizer, AutoModel
+import torch
+
+tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+
+def embed(text):
+    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    with torch.no_grad():
+        emb = model(**inputs).last_hidden_state.mean(dim=1)
+    return emb.numpy()
 
 index = None
 chunks = []   # { text, source, page }
@@ -92,9 +102,15 @@ async def upload(files: List[UploadFile] = File(...)):
     }
 
 # ================= ASK =================
+# ================= GLOBALS =================
+index = None
+chunks = []
+embedder = SentenceTransformer(EMBED_MODEL)  # ensure defined globally
+
+# ================= ASK =================
 @app.post("/ask")
 async def ask(body: dict = Body(...)):
-    global index, chunks
+    global index, chunks, embedder  # include embedder here
 
     query = body.get("q", "").strip()
 
@@ -104,15 +120,15 @@ async def ask(body: dict = Body(...)):
     if index is None or not chunks:
         return {"answer": "Upload documents first."}
 
-    # ================= VECTOR SEARCH =================
-    q_emb = embedder.encode(query).astype("float32")
+    # Semantic vector search
+    q_emb = embedder.encode(query).astype("float32")  # FIXED usage
     _, indices = index.search(np.array([q_emb]), TOP_K)
 
     context_parts = []
     sources = set()
 
     for i in indices[0]:
-        if 0 <= i < len(chunks):
+        if i < len(chunks):
             context_parts.append(
                 chunks[i]["text"][:MAX_CHARS_PER_CHUNK]
             )
@@ -120,13 +136,9 @@ async def ask(body: dict = Body(...)):
                 f'{chunks[i]["source"]} (page {chunks[i]["page"]})'
             )
 
-    # ❌ NO CONTEXT FOUND
-    if not context_parts:
-        return {"answer": "Not found in document"}
-
     context = "\n\n".join(context_parts)
 
-    # ================= PROMPT (UNCHANGED) =================
+    # Ollama prompt (unchanged)
     prompt = f"""
 You are a document-based assistant.
 
@@ -149,32 +161,31 @@ Provide a detailed explanation in 6–10 lines.
     try:
         resp = requests.post(
             OLLAMA_URL,
-            json={
+            json={{
                 "model": MODEL_NAME,
                 "prompt": prompt,
                 "stream": False,
-                "options": {
+                "options": {{
                     "temperature": 0.1,
                     "num_predict": 400
-                }
-            },
+                }}
+            }},
             timeout=120
         )
 
-        data = resp.json()
-        answer = data.get("response", "").strip()
+        answer = resp.json().get("response", "").strip()
 
-        # 🔒 SAFETY GUARD
-        if not answer or len(answer) < 15 or answer.isdigit():
+        # safety guard
+        if not answer or answer.isdigit() or len(answer) < 15:
             answer = "Not found in document"
 
-        return {
+        return {{
             "answer": answer,
             "sources": list(sources)
-        }
+        }}
 
     except Exception as e:
-        return {"answer": f"Error: {str(e)}"}
+        return {{"answer": f"Error: {str(e)}"}}
 
 # ================= RUN =================
 if __name__ == "__main__":
